@@ -8,19 +8,23 @@ export const dynamic = 'force-dynamic';
 // Requires RSA signature for transaction requests
 
 function getPrivateKey(): string {
-    // Read from env variable (recommended for Vercel)
+    // Option 1: Base64-encoded key (recommended for Vercel - no newline issues)
+    const base64Key = process.env.JENGA_PRIVATE_KEY_BASE64;
+    if (base64Key) {
+        return Buffer.from(base64Key, 'base64').toString('utf8');
+    }
+    // Option 2: Raw PEM key from env
     const envKey = process.env.JENGA_PRIVATE_KEY;
     if (envKey) {
-        // Handle escaped newlines in env vars
         return envKey.replace(/\\n/g, '\n');
     }
-    // Fallback to file (local dev)
+    // Option 3: File (local dev)
     try {
         const fs = require('fs');
         const path = require('path');
         return fs.readFileSync(path.resolve(process.cwd(), 'jenga-private-key.pem'), 'utf8');
     } catch {
-        throw new Error('Private key not found. Set JENGA_PRIVATE_KEY env variable.');
+        throw new Error('Private key not found. Set JENGA_PRIVATE_KEY_BASE64 env variable.');
     }
 }
 
