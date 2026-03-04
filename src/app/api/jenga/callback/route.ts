@@ -9,6 +9,8 @@ import {
 } from '@/lib/supabase';
 import { createHotspotUser, hoursToMikrotikUptime } from '@/lib/mikrotik';
 
+export const dynamic = 'force-dynamic';
+
 // Jenga IPN (Instant Payment Notification) callback
 // Configure this URL in your JengaHQ dashboard under IPN settings
 
@@ -22,7 +24,6 @@ export async function POST(request: NextRequest) {
             transactionId,
             referenceNumber,
             status,
-            amount,
             transactionReference,
         } = body;
 

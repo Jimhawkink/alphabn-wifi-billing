@@ -37,20 +37,32 @@ async function mikrotikRequest(path: string, method: string = 'GET', body?: Reco
         'Content-Type': 'application/json',
     };
 
-    const options: RequestInit = {
+    // Use Node.js https agent to skip SSL verification for MikroTik self-signed certs
+    let agent: unknown = undefined;
+    if (config.useSsl) {
+        try {
+            const https = require('https');
+            agent = new https.Agent({ rejectUnauthorized: false });
+        } catch {
+            // In edge runtime or build time, https module may not be available
+        }
+    }
+
+    const options: Record<string, unknown> = {
         method,
         headers,
-        // Skip SSL verification for self-signed certs on MikroTik
-        // @ts-expect-error - Node.js specific option
-        rejectUnauthorized: false,
     };
+
+    if (agent) {
+        options.agent = agent;
+    }
 
     if (body) {
         options.body = JSON.stringify(body);
     }
 
     try {
-        const response = await fetch(url, options);
+        const response = await fetch(url, options as RequestInit);
         if (!response.ok) {
             const errorText = await response.text();
             throw new Error(`MikroTik API error (${response.status}): ${errorText}`);
