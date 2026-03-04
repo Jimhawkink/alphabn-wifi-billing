@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createWifiPayment } from '@/lib/supabase';
 
-// Equity Jenga API - Initiate Payment (Receive Money - Mobile)
-// This sends an STK push to the customer's phone
+export const dynamic = 'force-dynamic';
+
+// Equity Jenga API v3 - Initiate Payment (M-Pesa STK Push)
+// Docs: https://developer.jengahq.io
 
 async function getJengaToken(): Promise<string> {
     const apiKey = process.env.JENGA_API_KEY;
     const merchantCode = process.env.JENGA_MERCHANT_CODE;
     const consumerSecret = process.env.JENGA_CONSUMER_SECRET;
-    const apiUrl = process.env.JENGA_API_URL || 'https://uat.jengahq.io';
+    const baseUrl = process.env.JENGA_API_URL || 'https://uat.finserve.africa';
 
-    const response = await fetch(`${apiUrl}/authenticate/merchant`, {
+    console.log('Authenticating with Jenga at:', `${baseUrl}/authentication/api/v3/authenticate/merchant`);
+
+    const response = await fetch(`${baseUrl}/authentication/api/v3/authenticate/merchant`, {
         method: 'POST',
         headers: {
             'Content-Type': 'application/json',
@@ -19,8 +23,14 @@ async function getJengaToken(): Promise<string> {
         body: JSON.stringify({ merchantCode, consumerSecret }),
     });
 
-    if (!response.ok) throw new Error('Auth failed');
-    const data = await response.json();
+    const responseText = await response.text();
+    console.log('Jenga auth response:', response.status, responseText);
+
+    if (!response.ok) {
+        throw new Error(`Auth failed (${response.status}): ${responseText}`);
+    }
+
+    const data = JSON.parse(responseText);
     return data.accessToken || data.token;
 }
 
@@ -50,16 +60,15 @@ export async function POST(request: NextRequest) {
             });
         } catch (dbError) {
             console.error('DB error creating payment:', dbError);
-            // Continue anyway - payment can still work
-            payment = { id: Date.now() }; // Temporary ID
+            payment = { id: Date.now() };
         }
 
-        // 2. Initiate Jenga payment (Receive Money)
-        const apiUrl = process.env.JENGA_API_URL || 'https://uat.jengahq.io';
+        // 2. Initiate Jenga payment (M-Pesa STK Push)
+        const baseUrl = process.env.JENGA_API_URL || 'https://uat.finserve.africa';
         const merchantCode = process.env.JENGA_MERCHANT_CODE;
 
         if (!merchantCode || !process.env.JENGA_API_KEY) {
-            // Demo mode - simulate successful payment initiation
+            // Demo mode
             console.log('DEMO MODE: Jenga API not configured. Simulating payment.');
             return NextResponse.json({
                 success: true,
@@ -71,38 +80,47 @@ export async function POST(request: NextRequest) {
 
         try {
             const token = await getJengaToken();
+            console.log('Got Jenga token, initiating STK push...');
 
-            // Jenga Receive Money - Mobile Wallet
-            const paymentResponse = await fetch(`${apiUrl}/transaction/v2/remittance`, {
+            // Jenga v3 - M-Pesa STK/USSD Push
+            const stkUrl = `${baseUrl}/v3-apis/payment-api/v3.0/stkussdpush/initiate`;
+            console.log('STK push URL:', stkUrl);
+
+            const paymentPayload = {
+                customer: {
+                    mobileNumber: phone,
+                    countryCode: 'KE',
+                },
+                transaction: {
+                    amount: amount.toString(),
+                    description: `WiFi: ${packageName}`,
+                    reference: `WIFI-${payment.id}`,
+                    currency: 'KES',
+                },
+                merchant: {
+                    tillNumber: merchantCode,
+                },
+            };
+            console.log('STK push payload:', JSON.stringify(paymentPayload));
+
+            const paymentResponse = await fetch(stkUrl, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
                     'Authorization': `Bearer ${token}`,
                 },
-                body: JSON.stringify({
-                    source: {
-                        countryCode: 'KE',
-                        name: 'WiFi Customer',
-                        accountNumber: phone,
-                    },
-                    destination: {
-                        type: 'merchant',
-                        countryCode: 'KE',
-                        name: process.env.NEXT_PUBLIC_BUSINESS_NAME || 'AlphaBN',
-                        merchantCode: merchantCode,
-                    },
-                    transfer: {
-                        type: 'MobileWallet',
-                        amount: amount.toString(),
-                        currencyCode: 'KES',
-                        reference: `WIFI-${payment.id}`,
-                        date: new Date().toISOString().split('T')[0],
-                        description: `WiFi: ${packageName}`,
-                    },
-                }),
+                body: JSON.stringify(paymentPayload),
             });
 
-            const paymentData = await paymentResponse.json();
+            const responseText = await paymentResponse.text();
+            console.log('STK push response:', paymentResponse.status, responseText);
+
+            let paymentData;
+            try {
+                paymentData = JSON.parse(responseText);
+            } catch {
+                paymentData = { message: responseText };
+            }
 
             if (paymentResponse.ok) {
                 // Update payment record with Jenga reference
@@ -111,8 +129,8 @@ export async function POST(request: NextRequest) {
                     await supabase
                         .from('wifi_payments')
                         .update({
-                            jenga_reference: paymentData.transactionId || paymentData.referenceNumber,
-                            jenga_checkout_request_id: paymentData.checkoutRequestId,
+                            jenga_reference: paymentData.transactionId || paymentData.referenceNumber || paymentData.checkoutRequestID,
+                            jenga_checkout_request_id: paymentData.checkoutRequestID || paymentData.checkoutRequestId,
                         })
                         .eq('id', payment.id);
                 } catch (e) {
@@ -122,22 +140,24 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({
                     success: true,
                     paymentId: payment.id,
-                    jengaRef: paymentData.transactionId || paymentData.referenceNumber,
-                    message: 'Payment request sent to your phone. Please complete the payment.',
+                    jengaRef: paymentData.transactionId || paymentData.referenceNumber || paymentData.checkoutRequestID,
+                    message: 'Payment request sent to your phone. Please enter your M-Pesa PIN.',
                 });
             } else {
-                console.error('Jenga payment error:', paymentData);
+                console.error('Jenga STK push error:', paymentData);
                 return NextResponse.json({
                     success: false,
-                    message: paymentData.message || 'Payment initiation failed. Please try again.',
+                    message: paymentData.message || paymentData.error || 'Payment initiation failed. Please try again.',
+                    detail: paymentData,
                     paymentId: payment.id,
                 }, { status: 400 });
             }
-        } catch (jengaError) {
-            console.error('Jenga API error:', jengaError);
+        } catch (jengaError: unknown) {
+            const errorMessage = jengaError instanceof Error ? jengaError.message : 'Unknown error';
+            console.error('Jenga API error:', errorMessage);
             return NextResponse.json({
                 success: false,
-                message: 'Payment service temporarily unavailable. Please try again.',
+                message: `Payment service error: ${errorMessage}`,
                 paymentId: payment.id,
             }, { status: 503 });
         }
