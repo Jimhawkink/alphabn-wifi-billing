@@ -118,10 +118,10 @@ export async function POST(request: NextRequest) {
                 BusinessShortCode: shortcode,
                 Password: password,
                 Timestamp: timestamp,
-                TransactionType: 'CustomerPayBillOnline',
-                Amount: Math.ceil(amount), // Must be integer
+                TransactionType: 'CustomerBuyGoodsOnline',
+                Amount: Math.ceil(amount),
                 PartyA: formattedPhone,
-                PartyB: shortcode,
+                PartyB: process.env.MPESA_TILL_NUMBER || shortcode,
                 PhoneNumber: formattedPhone,
                 CallBackURL: callbackUrl,
                 AccountReference: `WIFI${payment.id}`,
