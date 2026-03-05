@@ -114,14 +114,19 @@ export async function POST(request: NextRequest) {
             const formattedPhone = formatPhone(phone);
             const callbackUrl = process.env.MPESA_CALLBACK_URL || 'https://alphabn-wifi-billing.vercel.app/api/mpesa/callback';
 
+            // Determine transaction type: Paybill vs Till
+            const tillNumber = process.env.MPESA_TILL_NUMBER;
+            const transactionType = tillNumber ? 'CustomerBuyGoodsOnline' : 'CustomerPayBillOnline';
+            const partyB = tillNumber || shortcode;
+
             const stkPayload = {
                 BusinessShortCode: shortcode,
                 Password: password,
                 Timestamp: timestamp,
-                TransactionType: 'CustomerBuyGoodsOnline',
+                TransactionType: transactionType,
                 Amount: Math.ceil(amount),
                 PartyA: formattedPhone,
-                PartyB: process.env.MPESA_TILL_NUMBER || shortcode,
+                PartyB: partyB,
                 PhoneNumber: formattedPhone,
                 CallBackURL: callbackUrl,
                 AccountReference: `WIFI${payment.id}`,
@@ -133,7 +138,7 @@ export async function POST(request: NextRequest) {
                 Password: '***hidden***',
             }));
 
-            // 5. Send STK Push
+            // 5. Send STK Push (with 8s timeout to avoid Vercel function timeout)
             const stkResponse = await fetch(`${baseUrl}/mpesa/stkpush/v1/processrequest`, {
                 method: 'POST',
                 headers: {
@@ -141,6 +146,7 @@ export async function POST(request: NextRequest) {
                     'Authorization': `Bearer ${token}`,
                 },
                 body: JSON.stringify(stkPayload),
+                signal: AbortSignal.timeout(8000),
             });
 
             const responseText = await stkResponse.text();
