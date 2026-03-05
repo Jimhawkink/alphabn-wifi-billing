@@ -80,7 +80,7 @@ export default function CaptivePortal() {
         }
         setIsProcessing(true);
         try {
-            const res = await fetch('/api/jenga/pay', {
+            const res = await fetch('/api/mpesa/pay', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
