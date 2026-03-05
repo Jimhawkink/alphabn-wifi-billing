@@ -150,6 +150,7 @@ export async function POST(request: NextRequest) {
                 merchant: {
                     accountNumber: merchantCode,
                     name: process.env.NEXT_PUBLIC_BUSINESS_NAME || 'AlphaBN',
+                    countryCode: 'KE',
                 },
                 payment: {
                     ref: reference,
@@ -159,6 +160,7 @@ export async function POST(request: NextRequest) {
                     currency: 'KES',
                     description: `WiFi: ${packageName}`,
                     pushType: 'STK',
+                    callbackUrl: `https://alphabn-wifi-billing.vercel.app/api/jenga/callback`,
                 },
             };
 
