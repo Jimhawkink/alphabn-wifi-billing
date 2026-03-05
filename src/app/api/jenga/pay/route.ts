@@ -149,6 +149,7 @@ export async function POST(request: NextRequest) {
             const paymentPayload = {
                 merchant: {
                     accountNumber: merchantCode,
+                    name: process.env.NEXT_PUBLIC_BUSINESS_NAME || 'AlphaBN',
                 },
                 payment: {
                     ref: reference,
