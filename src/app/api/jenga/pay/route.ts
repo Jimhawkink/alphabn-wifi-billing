@@ -158,6 +158,7 @@ export async function POST(request: NextRequest) {
                     amount: amountStr,
                     currency: 'KES',
                     description: `WiFi: ${packageName}`,
+                    pushType: 'STK',
                 },
             };
 
