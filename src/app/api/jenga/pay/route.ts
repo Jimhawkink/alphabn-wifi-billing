@@ -4,34 +4,31 @@ import * as crypto from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
-// Equity Jenga API v3 - Initiate Payment (M-Pesa STK Push)
-// Requires RSA signature for transaction requests
+// Equity Jenga API v3 - M-Pesa STK Push
+// Signature formula: merchant.accountNumber + payment.ref + payment.mobileNumber + payment.telco + payment.amount + payment.currency
 
 function getPrivateKey(): string {
-    // Option 1: Base64-encoded key (recommended for Vercel - no newline issues)
     const base64Key = process.env.JENGA_PRIVATE_KEY_BASE64;
     if (base64Key) {
         return Buffer.from(base64Key, 'base64').toString('utf8');
     }
-    // Option 2: Raw PEM key from env
     const envKey = process.env.JENGA_PRIVATE_KEY;
     if (envKey) {
         return envKey.replace(/\\n/g, '\n');
     }
-    // Option 3: File (local dev)
     try {
         const fs = require('fs');
         const path = require('path');
         return fs.readFileSync(path.resolve(process.cwd(), 'jenga-private-key.pem'), 'utf8');
     } catch {
-        throw new Error('Private key not found. Set JENGA_PRIVATE_KEY_BASE64 env variable.');
+        throw new Error('Private key not found');
     }
 }
 
-function signRequest(data: string): string {
+function generateSignature(dataToSign: string): string {
     const privateKey = getPrivateKey();
     const sign = crypto.createSign('SHA256');
-    sign.update(data);
+    sign.update(dataToSign);
     sign.end();
     return sign.sign(privateKey, 'base64');
 }
@@ -42,8 +39,6 @@ async function getJengaToken(): Promise<string> {
     const consumerSecret = process.env.JENGA_CONSUMER_SECRET;
     const baseUrl = process.env.JENGA_API_URL || 'https://uat.finserve.africa';
 
-    console.log('Jenga auth at:', `${baseUrl}/authentication/api/v3/authenticate/merchant`);
-
     const response = await fetch(`${baseUrl}/authentication/api/v3/authenticate/merchant`, {
         method: 'POST',
         headers: {
@@ -53,15 +48,41 @@ async function getJengaToken(): Promise<string> {
         body: JSON.stringify({ merchantCode, consumerSecret }),
     });
 
-    const responseText = await response.text();
-    console.log('Auth response:', response.status, responseText.substring(0, 200));
-
     if (!response.ok) {
-        throw new Error(`Auth failed (${response.status}): ${responseText}`);
+        const errorText = await response.text();
+        throw new Error(`Auth failed (${response.status}): ${errorText}`);
     }
 
-    const data = JSON.parse(responseText);
+    const data = await response.json();
     return data.accessToken || data.token;
+}
+
+// Detect telco from Kenyan phone number
+function detectTelco(phone: string): string {
+    const cleaned = phone.replace(/\D/g, '');
+    const prefix = cleaned.startsWith('254') ? cleaned.substring(3, 6) : cleaned.substring(1, 4);
+
+    // Safaricom prefixes
+    if (['070', '071', '072', '074', '075', '076', '079', '710', '711', '712', '714', '715', '716', '717', '718', '719', '720', '721', '722', '723', '724', '725', '726', '727', '728', '729', '740', '741', '742', '743', '745', '746', '748', '757', '758', '759', '768', '769', '790', '791', '792', '793', '794', '795', '796', '797', '798', '799'].some(p => prefix.startsWith(p.substring(0, 2)))) {
+        return 'Safaricom';
+    }
+    // Airtel prefixes
+    if (['073', '078', '100', '101', '102', '103', '104', '105', '106'].some(p => prefix.startsWith(p.substring(0, 2)))) {
+        return 'Airtel';
+    }
+    // Equitel
+    if (prefix.startsWith('76')) {
+        return 'Equitel';
+    }
+    return 'Safaricom'; // Default
+}
+
+// Format phone to 254 format
+function formatPhone(phone: string): string {
+    const cleaned = phone.replace(/\D/g, '');
+    if (cleaned.startsWith('254')) return cleaned;
+    if (cleaned.startsWith('0')) return '254' + cleaned.substring(1);
+    return '254' + cleaned;
 }
 
 export async function POST(request: NextRequest) {
@@ -76,7 +97,7 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        // 1. Create payment record
+        // Create payment record
         let payment;
         try {
             payment = await createWifiPayment({
@@ -93,12 +114,10 @@ export async function POST(request: NextRequest) {
             payment = { id: Date.now() };
         }
 
-        // 2. Check if Jenga is configured
         const baseUrl = process.env.JENGA_API_URL || 'https://uat.finserve.africa';
         const merchantCode = process.env.JENGA_MERCHANT_CODE;
 
         if (!merchantCode || !process.env.JENGA_API_KEY) {
-            console.log('DEMO MODE: No Jenga credentials');
             return NextResponse.json({
                 success: true,
                 paymentId: payment.id,
@@ -108,37 +127,41 @@ export async function POST(request: NextRequest) {
         }
 
         try {
-            // 3. Authenticate
+            // 1. Authenticate
             const token = await getJengaToken();
-            console.log('Got token, initiating STK push...');
 
-            // 4. Generate signature
-            // Jenga v3 signature: sign the concatenation of specific fields
-            const reference = `WIFI-${payment.id}`;
-            const signatureData = `${amount}${phone}${reference}`;
-            const signature = signRequest(signatureData);
-            console.log('Generated signature for:', signatureData);
+            // 2. Prepare payment details
+            const formattedPhone = formatPhone(phone);
+            const telco = detectTelco(phone);
+            const reference = `WIFI${payment.id}`;
+            const amountStr = amount.toString();
 
-            // 5. M-Pesa STK Push
+            // 3. Generate signature
+            // Formula: merchant.accountNumber + payment.ref + payment.mobileNumber + payment.telco + payment.amount + payment.currency
+            const signatureData = `${merchantCode}${reference}${formattedPhone}${telco}${amountStr}KES`;
+            console.log('Signature data:', signatureData);
+            const signature = generateSignature(signatureData);
+            console.log('Signature generated successfully');
+
+            // 4. STK Push request
             const stkUrl = `${baseUrl}/v3-apis/payment-api/v3.0/stkussdpush/initiate`;
 
             const paymentPayload = {
-                customer: {
-                    mobileNumber: phone,
-                    countryCode: 'KE',
-                },
-                transaction: {
-                    amount: amount.toString(),
-                    description: `WiFi: ${packageName}`,
-                    reference: reference,
-                    currency: 'KES',
-                },
                 merchant: {
-                    tillNumber: merchantCode,
+                    accountNumber: merchantCode,
+                },
+                payment: {
+                    ref: reference,
+                    mobileNumber: formattedPhone,
+                    telco: telco,
+                    amount: amountStr,
+                    currency: 'KES',
+                    description: `WiFi: ${packageName}`,
                 },
             };
 
-            console.log('STK payload:', JSON.stringify(paymentPayload));
+            console.log('STK URL:', stkUrl);
+            console.log('Payload:', JSON.stringify(paymentPayload));
 
             const paymentResponse = await fetch(stkUrl, {
                 method: 'POST',
@@ -161,6 +184,7 @@ export async function POST(request: NextRequest) {
             }
 
             if (paymentResponse.ok) {
+                // Update payment record
                 try {
                     const { supabase } = await import('@/lib/supabase');
                     await supabase
@@ -181,11 +205,17 @@ export async function POST(request: NextRequest) {
                     message: 'Payment request sent to your phone. Please enter your M-Pesa PIN.',
                 });
             } else {
-                console.error('STK push error:', paymentData);
+                console.error('STK error:', paymentData);
                 return NextResponse.json({
                     success: false,
-                    message: paymentData.message || paymentData.error || 'Payment failed. Please try again.',
+                    message: paymentData.message || paymentData.error || 'Payment failed.',
                     detail: paymentData,
+                    debug: {
+                        signatureData,
+                        telco,
+                        formattedPhone,
+                        stkUrl,
+                    },
                     paymentId: payment.id,
                 }, { status: 400 });
             }
